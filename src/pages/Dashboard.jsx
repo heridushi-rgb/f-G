@@ -73,7 +73,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <div className="metrics" style={{ gridTemplateColumns: 'repeat(5, minmax(0,1fr))' }}>
+      <div className="metrics metrics-5">
         <div className="mc">
           <div className="mc-label">Bank Account</div>
           <div className="mc-value" style={{ fontSize: 18, color: metrics?.bankBal >= 0 ? 'var(--ok)' : 'var(--er)' }}>

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { NavLink, Routes, Route, useLocation } from 'react-router-dom'
+import { NavLink, Routes, Route, useLocation, Link } from 'react-router-dom'
 import { sb } from '../lib/supabase'
 import { useNotify } from '../lib/notify'
 import Modal from './Modal'
@@ -28,6 +28,7 @@ export default function Shell({ user }) {
   const initials = username.slice(0, 2).toUpperCase()
   const navCls = ({ isActive }) => `nav-item${isActive ? ' active' : ''}`
 
+  const [moreOpen, setMoreOpen] = useState(false)
   const [pwModal, setPwModal] = useState(false)
   const [newPw, setNewPw] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
@@ -150,6 +151,42 @@ export default function Shell({ user }) {
             <Route path="/ledger" element={<Ledger />} />
             <Route path="/reports" element={<Reports />} />
           </Routes>
+        </div>
+      </div>
+
+      {/* Mobile bottom navigation */}
+      <div className="bottom-nav">
+        {moreOpen && <div className="more-overlay open" onClick={() => setMoreOpen(false)} />}
+        <div className={`more-drawer${moreOpen ? ' open' : ''}`}>
+          <NavLink to="/payments" className={({ isActive }) => isActive ? 'active' : ''} onClick={() => setMoreOpen(false)}>
+            <span>↓</span> Payments
+          </NavLink>
+          <NavLink to="/ledger" className={({ isActive }) => isActive ? 'active' : ''} onClick={() => setMoreOpen(false)}>
+            <span>⇌</span> Ledger
+          </NavLink>
+          <NavLink to="/reports" className={({ isActive }) => isActive ? 'active' : ''} onClick={() => setMoreOpen(false)}>
+            <span>↗</span> Reports & Export
+          </NavLink>
+          <button onClick={() => { setMoreOpen(false); signOut() }} style={{ color: 'var(--er)' }}>
+            <span>←</span> Sign out
+          </button>
+        </div>
+        <div className="bottom-nav-inner">
+          <NavLink to="/" end className={({ isActive }) => `bn-item${isActive ? ' active' : ''}`}>
+            <span className="bn-icon">▦</span>Dashboard
+          </NavLink>
+          <NavLink to="/inventory" className={({ isActive }) => `bn-item${isActive ? ' active' : ''}`}>
+            <span className="bn-icon">⊞</span>Inventory
+          </NavLink>
+          <NavLink to="/orders" className={({ isActive }) => `bn-item${isActive ? ' active' : ''}`}>
+            <span className="bn-icon">≡</span>Orders
+          </NavLink>
+          <NavLink to="/customers" className={({ isActive }) => `bn-item${isActive ? ' active' : ''}`}>
+            <span className="bn-icon">◉</span>Customers
+          </NavLink>
+          <button className={`bn-item${moreOpen ? ' active' : ''}`} onClick={() => setMoreOpen(o => !o)}>
+            <span className="bn-icon">···</span>More
+          </button>
         </div>
       </div>
 

@@ -5,8 +5,7 @@ import { useNotify } from '../lib/notify'
 import Modal from '../components/Modal'
 
 const EMPTY_FORM = { id: '', name: '', phone: '', business_name: '', notes: '' }
-const EMPTY_PAY  = { order_id: '', amount: '', method: 'mobile_money', account_id: '', date: '' }
-const METHODS    = ['mobile_money', 'cash', 'bank_transfer', 'check']
+const EMPTY_PAY  = { order_id: '', amount: '', account_id: '', date: '' }
 const METHOD_LABEL = { mobile_money: 'Mobile Money', cash: 'Cash', bank_transfer: 'Bank Transfer', check: 'Check' }
 
 const STATUS_BADGE = {
@@ -108,7 +107,6 @@ export default function Customers() {
       customer_id: viewCust.id,
       order_id: payForm.order_id || null,
       amount,
-      method: payForm.method,
       account_id: payForm.account_id,
       date: payForm.date,
     })
@@ -309,20 +307,12 @@ export default function Customers() {
                       <input className="form-input" type="date" value={payForm.date} onChange={e => setPayForm(f => ({ ...f, date: e.target.value }))} />
                     </div>
                   </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label className="form-label">Method</label>
-                      <select className="form-input" value={payForm.method} onChange={e => setPayForm(f => ({ ...f, method: e.target.value }))}>
-                        {METHODS.map(m => <option key={m} value={m}>{METHOD_LABEL[m]}</option>)}
-                      </select>
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Deposit Into *</label>
-                      <select className="form-input" value={payForm.account_id} onChange={e => setPayForm(f => ({ ...f, account_id: e.target.value }))}>
-                        <option value="">— select account —</option>
-                        {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
-                      </select>
-                    </div>
+                  <div className="form-group">
+                    <label className="form-label">Deposit Into *</label>
+                    <select className="form-input" value={payForm.account_id} onChange={e => setPayForm(f => ({ ...f, account_id: e.target.value }))}>
+                      <option value="">— select account —</option>
+                      {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
+                    </select>
                   </div>
                   <div style={{ display: 'flex', gap: 7 }}>
                     <button className="btn" onClick={() => setPaySection(false)}>Cancel</button>

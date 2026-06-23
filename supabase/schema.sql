@@ -84,12 +84,14 @@ create table if not exists payments (
   customer_id uuid references customers(id),
   order_id uuid references orders(id),
   amount numeric(14,2) not null,
-  method text not null check (method in ('cash','mobile_money','bank_transfer','check')),
   account_id uuid references accounts(id),
   date date not null default current_date,
   notes text,
   created_at timestamptz not null default now()
 );
+
+-- Migration: add account_id if payments table already existed with old schema
+alter table payments add column if not exists account_id uuid references accounts(id);
 
 -- ── Ledger (expenses, supplier payments, transfers between accounts) ─────────
 create table if not exists cash_transactions (

@@ -4,10 +4,7 @@ import { fmt, exportCSV } from '../lib/utils'
 import { useNotify } from '../lib/notify'
 import Modal from '../components/Modal'
 
-const METHODS = ['cash', 'mobile_money', 'bank_transfer', 'check']
-const METHOD_LABEL = { cash: 'Cash', mobile_money: 'Mobile Money', bank_transfer: 'Bank Transfer', check: 'Check' }
-
-const EMPTY_FORM = { customer_id: '', order_id: '', amount: '', method: 'mobile_money', account_id: '', date: '', notes: '' }
+const EMPTY_FORM = { customer_id: '', order_id: '', amount: '', account_id: '', date: '', notes: '' }
 
 export default function Payments() {
   const notify = useNotify()
@@ -76,7 +73,6 @@ export default function Payments() {
       customer_id: form.customer_id,
       order_id: form.order_id || null,
       amount,
-      method: form.method,
       account_id: form.account_id,
       date: form.date,
       notes: form.notes || null,
@@ -132,13 +128,13 @@ export default function Payments() {
         <div className="tbl-wrap">
           <table>
             <thead>
-              <tr><th>Date</th><th>Customer</th><th>Amount</th><th>Method</th><th>Into Account</th><th>Linked Order</th><th>Notes</th></tr>
+              <tr><th>Date</th><th>Customer</th><th>Amount</th><th>Into Account</th><th>Linked Order</th><th>Notes</th></tr>
             </thead>
             <tbody>
               {!payments
-                ? <tr><td colSpan="7"><div className="loading"><span className="spinner" />Loading...</div></td></tr>
+                ? <tr><td colSpan="6"><div className="loading"><span className="spinner" />Loading...</div></td></tr>
                 : payments.length === 0
-                  ? <tr><td colSpan="7"><div className="empty">No payments recorded yet</div></td></tr>
+                  ? <tr><td colSpan="6"><div className="empty">No payments recorded yet</div></td></tr>
                   : payments.map(p => (
                       <tr key={p.id}>
                         <td style={{ color: 'var(--t3)' }}>{p.date}</td>
@@ -146,7 +142,6 @@ export default function Payments() {
                         <td className="mono" style={{ fontWeight: 600, color: 'var(--ok)' }}>
                           {p.accounts?.currency || 'RWF'} {fmt(p.amount)}
                         </td>
-                        <td>{METHOD_LABEL[p.method] || p.method}</td>
                         <td style={{ fontWeight: 500 }}>{p.accounts?.name || '—'}</td>
                         <td style={{ color: 'var(--t3)' }}>{p.orders?.date || '—'}</td>
                         <td style={{ color: 'var(--t3)' }}>{p.notes || '—'}</td>
@@ -217,20 +212,12 @@ export default function Payments() {
           </div>
         </div>
 
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Payment Method</label>
-            <select className="form-input" value={form.method} onChange={e => setForm(f => ({ ...f, method: e.target.value }))}>
-              {METHODS.map(m => <option key={m} value={m}>{METHOD_LABEL[m]}</option>)}
-            </select>
-          </div>
-          <div className="form-group">
-            <label className="form-label">Money Goes Into *</label>
-            <select className="form-input" value={form.account_id} onChange={e => setForm(f => ({ ...f, account_id: e.target.value }))}>
-              <option value="">— select account —</option>
-              {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
-            </select>
-          </div>
+        <div className="form-group">
+          <label className="form-label">Money Goes Into *</label>
+          <select className="form-input" value={form.account_id} onChange={e => setForm(f => ({ ...f, account_id: e.target.value }))}>
+            <option value="">— select account —</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
+          </select>
         </div>
 
         <div className="form-group">

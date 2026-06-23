@@ -15,6 +15,7 @@ export default function Payments() {
   const [customers, setCustomers] = useState([])
   const [accounts, setAccounts] = useState([])
   const [custOrders, setCustOrders] = useState([])
+  const [orderPaid, setOrderPaid] = useState(0)   // total already paid on selected order
   const [form, setForm] = useState(EMPTY_FORM)
   const [modal, setModal] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -38,19 +39,28 @@ export default function Payments() {
 
   async function onCustomerChange(customerId) {
     setForm(f => ({ ...f, customer_id: customerId, order_id: '' }))
+    setOrderPaid(0)
     if (!customerId) { setCustOrders([]); return }
     const { data } = await sb.from('orders')
       .select('id, date, status, order_items(qty, unit_price)')
       .eq('customer_id', customerId)
+      .neq('status', 'paid')
       .order('date', { ascending: false })
     setCustOrders(data || [])
   }
 
+  async function onOrderChange(orderId) {
+    setForm(f => ({ ...f, order_id: orderId }))
+    if (!orderId) { setOrderPaid(0); return }
+    const { data } = await sb.from('payments').select('amount').eq('order_id', orderId)
+    setOrderPaid((data || []).reduce((s, p) => s + p.amount, 0))
+  }
+
   function openNew() {
-    // Default account_id to first account if available
     const defaultAcc = accounts[0]?.id || ''
     setForm({ ...EMPTY_FORM, date: new Date().toISOString().split('T')[0], account_id: defaultAcc })
     setCustOrders([])
+    setOrderPaid(0)
     setModal(true)
   }
 
@@ -61,6 +71,7 @@ export default function Payments() {
     if (!form.account_id) { notify('Select which account the money goes into', 'error'); return }
     setSaving(true)
 
+    // Record the payment
     const { error } = await sb.from('payments').insert({
       customer_id: form.customer_id,
       order_id: form.order_id || null,
@@ -70,25 +81,37 @@ export default function Payments() {
       date: form.date,
       notes: form.notes || null,
     })
+    if (error) { setSaving(false); notify(error.message, 'error'); return }
 
-    if (!error && form.order_id) {
+    // Auto-create a ledger entry so it shows up in account balance
+    const custName = customers.find(c => c.id === form.customer_id)?.name || 'Customer'
+    await sb.from('cash_transactions').insert({
+      account_id: form.account_id,
+      type: 'in',
+      amount,
+      reason: `Payment received from ${custName}${form.order_id ? ' (order)' : ''}`,
+      date: form.date,
+    })
+
+    // Update order status based on total paid vs order total
+    if (form.order_id) {
       const ord = custOrders.find(o => o.id === form.order_id)
-      if (ord && ord.status !== 'paid') {
-        await sb.from('orders').update({ status: 'partially_paid' }).eq('id', form.order_id)
-      }
+      const orderTotal = (ord?.order_items || []).reduce((s, i) => s + i.qty * i.unit_price, 0)
+      const totalPaidNow = orderPaid + amount
+      const newStatus = totalPaidNow >= orderTotal ? 'paid' : 'partially_paid'
+      await sb.from('orders').update({ status: newStatus }).eq('id', form.order_id)
     }
 
     setSaving(false)
-    if (error) { notify(error.message, 'error'); return }
-    notify('Payment recorded')
+    notify('Payment recorded and added to ledger')
     setModal(false)
     load()
   }
 
-  const orderLabel = o => {
-    const total = (o.order_items || []).reduce((s, i) => s + i.qty * i.unit_price, 0)
-    return `${o.date} — RWF ${fmt(total)} (${o.status})`
-  }
+  // Order summary for the selected order
+  const selectedOrder = custOrders.find(o => o.id === form.order_id)
+  const orderTotal = selectedOrder ? (selectedOrder.order_items || []).reduce((s, i) => s + i.qty * i.unit_price, 0) : 0
+  const orderRemaining = Math.max(0, orderTotal - orderPaid)
 
   return (
     <>
@@ -135,7 +158,7 @@ export default function Payments() {
       </div>
 
       {/* Record Payment Modal */}
-      <Modal open={modal} onClose={() => setModal(false)} title="Record Payment from Customer">
+      <Modal open={modal} onClose={() => setModal(false)} title="Record Payment from Customer" wide>
         <div className="form-group">
           <label className="form-label">Customer *</label>
           <select className="form-input" value={form.customer_id} onChange={e => onCustomerChange(e.target.value)}>
@@ -147,17 +170,46 @@ export default function Payments() {
         {custOrders.length > 0 && (
           <div className="form-group">
             <label className="form-label">Link to Order (optional)</label>
-            <select className="form-input" value={form.order_id} onChange={e => setForm(f => ({ ...f, order_id: e.target.value }))}>
+            <select className="form-input" value={form.order_id} onChange={e => onOrderChange(e.target.value)}>
               <option value="">— general balance payment —</option>
-              {custOrders.map(o => <option key={o.id} value={o.id}>{orderLabel(o)}</option>)}
+              {custOrders.map(o => {
+                const t = (o.order_items || []).reduce((s, i) => s + i.qty * i.unit_price, 0)
+                return <option key={o.id} value={o.id}>{o.date} — RWF {fmt(t)} ({o.status})</option>
+              })}
             </select>
+          </div>
+        )}
+
+        {/* Order balance summary */}
+        {form.order_id && selectedOrder && (
+          <div style={{ background: 'var(--s2)', borderRadius: 'var(--rs)', padding: '10px 14px', marginBottom: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div>
+              <div className="form-label">Order Total</div>
+              <div className="mono" style={{ fontWeight: 600 }}>RWF {fmt(orderTotal)}</div>
+            </div>
+            <div>
+              <div className="form-label">Already Paid</div>
+              <div className="mono" style={{ fontWeight: 600, color: 'var(--ok)' }}>RWF {fmt(orderPaid)}</div>
+            </div>
+            <div>
+              <div className="form-label">Still Owed</div>
+              <div className="mono" style={{ fontWeight: 600, color: orderRemaining > 0 ? 'var(--er)' : 'var(--ok)' }}>
+                {orderRemaining > 0 ? `RWF ${fmt(orderRemaining)}` : 'Settled'}
+              </div>
+            </div>
           </div>
         )}
 
         <div className="form-row">
           <div className="form-group">
-            <label className="form-label">Amount *</label>
-            <input className="form-input" type="number" step="1" min="0" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" />
+            <label className="form-label">Amount (RWF) *</label>
+            <input
+              className="form-input"
+              type="number" step="1" min="0"
+              value={form.amount}
+              onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+              placeholder={orderRemaining > 0 ? fmt(orderRemaining) : '0'}
+            />
           </div>
           <div className="form-group">
             <label className="form-label">Date</label>

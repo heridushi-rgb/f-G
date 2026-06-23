@@ -12,42 +12,47 @@ const ACCOUNT_TYPES = [
 const TYPE_LABEL = { mobile_money: 'Mobile Money', cash: 'Cash / Safe', bank: 'Bank' }
 const TYPE_BADGE = { mobile_money: 'badge-a', cash: 'badge-x', bank: 'badge-b' }
 
-const EMPTY_TX  = { account_id: '', type: 'out', amount: '', reason: '', date: '' }
-const EMPTY_ACC = { id: '', name: '', type: 'bank', currency: 'RWF' }
+const EMPTY_TX       = { account_id: '', type: 'out', amount: '', reason: '', date: '' }
+const EMPTY_ACC      = { id: '', name: '', type: 'bank', currency: 'RWF' }
+const EMPTY_TRANSFER = { from_id: '', to_id: '', amount: '', date: '', notes: '' }
 
 export default function Ledger() {
   const notify = useNotify()
   const [accounts, setAccounts] = useState(null)
   const [transactions, setTransactions] = useState(null)
-  const [payments, setPayments] = useState(null)
   const [filterAcc, setFilterAcc] = useState('')
+
+  // Forms
   const [txForm, setTxForm] = useState(EMPTY_TX)
+  const [editForm, setEditForm] = useState(null)     // null = closed
   const [accForm, setAccForm] = useState(EMPTY_ACC)
+  const [transferForm, setTransferForm] = useState(EMPTY_TRANSFER)
+
+  // Modals
   const [txModal, setTxModal] = useState(false)
   const [accModal, setAccModal] = useState(false)
+  const [transferModal, setTransferModal] = useState(false)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { load() }, [])
 
   async function load() {
-    const [accRes, txRes, payRes] = await Promise.all([
+    const [accRes, txRes] = await Promise.all([
       sb.from('accounts').select('*').order('sort_order').order('created_at'),
       sb.from('cash_transactions').select('*, accounts(name, currency)').order('date', { ascending: false }).order('created_at', { ascending: false }),
-      sb.from('payments').select('amount, account_id'),
     ])
     setAccounts(accRes.data || [])
     setTransactions(txRes.data || [])
-    setPayments(payRes.data || [])
   }
 
+  // Balance = only from cash_transactions (payments auto-create a cash_transaction entry)
   function getBalance(accountId) {
-    const txs = (transactions || []).filter(t => t.account_id === accountId)
-    const fromTx = txs.reduce((s, t) => s + (t.type === 'in' ? t.amount : -t.amount), 0)
-    const fromPay = (payments || []).filter(p => p.account_id === accountId).reduce((s, p) => s + p.amount, 0)
-    return fromTx + fromPay
+    return (transactions || [])
+      .filter(t => t.account_id === accountId)
+      .reduce((s, t) => s + (t.type === 'in' ? t.amount : -t.amount), 0)
   }
 
-  // ── Add transaction ──
+  // ── Add transaction ──────────────────────────────────────────────────────
   function openTx(accountId) {
     setTxForm({ ...EMPTY_TX, account_id: accountId || '', date: new Date().toISOString().split('T')[0] })
     setTxModal(true)
@@ -73,16 +78,81 @@ export default function Ledger() {
     load()
   }
 
-  // ── Add / edit account ──
-  function openAddAcc() {
-    setAccForm(EMPTY_ACC)
-    setAccModal(true)
+  // ── Edit transaction ─────────────────────────────────────────────────────
+  function openEdit(t) {
+    setEditForm({ id: t.id, account_id: t.account_id, type: t.type, amount: String(t.amount), reason: t.reason, date: t.date })
   }
 
-  function openEditAcc(acc) {
-    setAccForm({ id: acc.id, name: acc.name, type: acc.type, currency: acc.currency })
-    setAccModal(true)
+  async function saveEdit() {
+    const amount = parseFloat(editForm.amount)
+    if (!amount || amount <= 0) { notify('Enter a valid amount', 'error'); return }
+    if (!editForm.reason.trim()) { notify('Reason is required', 'error'); return }
+    setSaving(true)
+    const { error } = await sb.from('cash_transactions').update({
+      account_id: editForm.account_id,
+      type: editForm.type,
+      amount,
+      reason: editForm.reason.trim(),
+      date: editForm.date,
+    }).eq('id', editForm.id)
+    setSaving(false)
+    if (error) { notify(error.message, 'error'); return }
+    notify('Entry updated')
+    setEditForm(null)
+    load()
   }
+
+  async function deleteEntry(id) {
+    if (!window.confirm('Delete this ledger entry?')) return
+    await sb.from('cash_transactions').delete().eq('id', id)
+    notify('Entry deleted')
+    load()
+  }
+
+  // ── Transfer between accounts ─────────────────────────────────────────────
+  function openTransfer() {
+    setTransferForm({ ...EMPTY_TRANSFER, date: new Date().toISOString().split('T')[0] })
+    setTransferModal(true)
+  }
+
+  async function saveTransfer() {
+    const amount = parseFloat(transferForm.amount)
+    if (!transferForm.from_id) { notify('Select source account', 'error'); return }
+    if (!transferForm.to_id) { notify('Select destination account', 'error'); return }
+    if (transferForm.from_id === transferForm.to_id) { notify('Source and destination must be different', 'error'); return }
+    if (!amount || amount <= 0) { notify('Enter a valid amount', 'error'); return }
+
+    const fromAcc = accounts.find(a => a.id === transferForm.from_id)
+    const toAcc   = accounts.find(a => a.id === transferForm.to_id)
+    const note    = transferForm.notes ? ` — ${transferForm.notes}` : ''
+    setSaving(true)
+
+    const { error } = await sb.from('cash_transactions').insert([
+      {
+        account_id: transferForm.from_id,
+        type: 'out',
+        amount,
+        reason: `Transfer to ${toAcc?.name}${note}`,
+        date: transferForm.date,
+      },
+      {
+        account_id: transferForm.to_id,
+        type: 'in',
+        amount,
+        reason: `Transfer from ${fromAcc?.name}${note}`,
+        date: transferForm.date,
+      },
+    ])
+    setSaving(false)
+    if (error) { notify(error.message, 'error'); return }
+    notify(`Transferred ${fromAcc?.currency || 'RWF'} ${fmt(amount)} from ${fromAcc?.name} to ${toAcc?.name}`)
+    setTransferModal(false)
+    load()
+  }
+
+  // ── Add / edit account ───────────────────────────────────────────────────
+  function openAddAcc() { setAccForm(EMPTY_ACC); setAccModal(true) }
+  function openEditAcc(acc) { setAccForm({ id: acc.id, name: acc.name, type: acc.type, currency: acc.currency }); setAccModal(true) }
 
   async function saveAcc() {
     if (!accForm.name.trim()) { notify('Account name is required', 'error'); return }
@@ -118,17 +188,14 @@ export default function Ledger() {
                   key={acc.id}
                   className="bal-card"
                   onClick={() => setFilterAcc(f => f === acc.id ? '' : acc.id)}
-                  style={{ cursor: 'pointer', outline: active ? '2px solid var(--brand)' : 'none', transition: 'outline 0.1s' }}
+                  style={{ cursor: 'pointer', outline: active ? '2px solid var(--brand)' : 'none' }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
                     <div>
-                      <span className={`badge ${TYPE_BADGE[acc.type]}`} style={{ marginBottom: 4 }}>{TYPE_LABEL[acc.type]}</span>
+                      <span className={`badge ${TYPE_BADGE[acc.type]}`}>{TYPE_LABEL[acc.type]}</span>
                       <div style={{ fontWeight: 600, fontSize: 13, marginTop: 4 }}>{acc.name}</div>
                     </div>
-                    <button
-                      className="btn btn-sm"
-                      onClick={e => { e.stopPropagation(); openEditAcc(acc) }}
-                    >Edit</button>
+                    <button className="btn btn-sm" onClick={e => { e.stopPropagation(); openEditAcc(acc) }}>Edit</button>
                   </div>
                   <div className={`bal-value ${bal >= 0 ? 'positive' : 'negative'}`} style={{ fontSize: 20 }}>
                     {acc.currency} {fmt(Math.abs(bal))}{bal < 0 ? ' DR' : ''}
@@ -144,7 +211,7 @@ export default function Ledger() {
           style={{
             border: '1.5px dashed var(--b2)', borderRadius: 'var(--r)', padding: '16px 20px',
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', minHeight: 100, color: 'var(--t3)', gap: 4, transition: 'background 0.12s',
+            cursor: 'pointer', minHeight: 100, color: 'var(--t3)', gap: 4,
           }}
           onMouseEnter={e => e.currentTarget.style.background = 'var(--s2)'}
           onMouseLeave={e => e.currentTarget.style.background = ''}
@@ -155,16 +222,15 @@ export default function Ledger() {
         </div>
       </div>
 
-      {/* Transactions table */}
+      {/* Transactions */}
       <div className="card">
         <div className="card-head">
           <span className="card-title">
             {selectedAccName ? `Transactions — ${selectedAccName}` : 'All Transactions'}
             {filterAcc && (
-              <button
-                onClick={() => setFilterAcc('')}
-                style={{ marginLeft: 8, fontSize: 10, color: 'var(--t3)', background: 'none', border: 'none', cursor: 'pointer', padding: '1px 5px' }}
-              >× show all</button>
+              <button onClick={() => setFilterAcc('')} style={{ marginLeft: 8, fontSize: 10, color: 'var(--t3)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                × show all
+              </button>
             )}
           </span>
           <div style={{ display: 'flex', gap: 7 }}>
@@ -172,25 +238,25 @@ export default function Ledger() {
               visibleTx.map(t => ({ Date: t.date, Account: t.accounts?.name, Currency: t.accounts?.currency, Type: t.type, Amount: t.amount, Reason: t.reason })),
               '4fg_ledger.csv'
             )}>↓ CSV</button>
+            <button className="btn btn-sm" onClick={openTransfer}>⇌ Transfer</button>
             <button className="btn btn-primary btn-sm" onClick={() => openTx(filterAcc)}>+ Add Entry</button>
           </div>
         </div>
 
         <div style={{ padding: '9px 16px', background: 'var(--s2)', borderBottom: '1px solid var(--b)', fontSize: 11.5, color: 'var(--t2)' }}>
-          Record here: expenses, supplier payments, transfers between accounts.
-          Customer payments go on the <strong>Payments</strong> page.
+          Customer payments appear here automatically. Add entries for: expenses, supplier payments, and use <strong>⇌ Transfer</strong> to move money between accounts.
         </div>
 
         <div className="tbl-wrap">
           <table>
             <thead>
-              <tr><th>Date</th><th>Account</th><th>Type</th><th>Amount</th><th>Reason</th></tr>
+              <tr><th>Date</th><th>Account</th><th>Type</th><th>Amount</th><th>Reason</th><th></th></tr>
             </thead>
             <tbody>
               {!transactions
-                ? <tr><td colSpan="5"><div className="loading"><span className="spinner" />Loading...</div></td></tr>
+                ? <tr><td colSpan="6"><div className="loading"><span className="spinner" />Loading...</div></td></tr>
                 : visibleTx.length === 0
-                  ? <tr><td colSpan="5"><div className="empty">No entries yet — click "+ Add Entry" to record an expense or transfer</div></td></tr>
+                  ? <tr><td colSpan="6"><div className="empty">No entries yet</div></td></tr>
                   : visibleTx.map(t => (
                       <tr key={t.id}>
                         <td style={{ color: 'var(--t3)' }}>{t.date}</td>
@@ -204,6 +270,12 @@ export default function Ledger() {
                           {t.type === 'in' ? '+' : '−'}{t.accounts?.currency || 'RWF'} {fmt(t.amount)}
                         </td>
                         <td>{t.reason}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button className="btn btn-sm" onClick={() => openEdit(t)}>Edit</button>
+                            <button className="btn btn-sm" onClick={() => deleteEntry(t.id)} style={{ color: 'var(--er)' }}>✕</button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
             </tbody>
@@ -211,26 +283,24 @@ export default function Ledger() {
         </div>
       </div>
 
-      {/* Add Transaction Modal */}
+      {/* Add Entry Modal */}
       <Modal open={txModal} onClose={() => setTxModal(false)} title="Add Ledger Entry">
         <div className="alert alert-w">
-          For expenses, supplier payments, or transfers between accounts — not for customer payments (use the Payments page for those).
+          For expenses, supplier payments, or manual deposits. Customer payments are added automatically via the Payments page.
         </div>
         <div className="form-group">
           <label className="form-label">Account *</label>
           <select className="form-input" value={txForm.account_id} onChange={e => setTxForm(f => ({ ...f, account_id: e.target.value }))} autoFocus>
             <option value="">— select account —</option>
-            {(accounts || []).map(a => (
-              <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
-            ))}
+            {(accounts || []).map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
           </select>
         </div>
         <div className="form-row">
           <div className="form-group">
             <label className="form-label">Type</label>
             <select className="form-input" value={txForm.type} onChange={e => setTxForm(f => ({ ...f, type: e.target.value }))}>
-              <option value="out">Money Out (expense / payment / transfer out)</option>
-              <option value="in">Money In (deposit / transfer in)</option>
+              <option value="out">Money Out (expense / payment)</option>
+              <option value="in">Money In (deposit)</option>
             </select>
           </div>
           <div className="form-group">
@@ -245,7 +315,7 @@ export default function Ledger() {
           </div>
           <div className="form-group">
             <label className="form-label">Reason *</label>
-            <input className="form-input" value={txForm.reason} onChange={e => setTxForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. Rent / Supplier payment / Safe → Bank" />
+            <input className="form-input" value={txForm.reason} onChange={e => setTxForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. Rent / Supplier payment" />
           </div>
         </div>
         <div className="form-actions">
@@ -254,17 +324,94 @@ export default function Ledger() {
         </div>
       </Modal>
 
+      {/* Edit Entry Modal */}
+      {editForm && (
+        <Modal open={!!editForm} onClose={() => setEditForm(null)} title="Edit Ledger Entry">
+          <div className="form-group">
+            <label className="form-label">Account</label>
+            <select className="form-input" value={editForm.account_id} onChange={e => setEditForm(f => ({ ...f, account_id: e.target.value }))}>
+              {(accounts || []).map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
+            </select>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Type</label>
+              <select className="form-input" value={editForm.type} onChange={e => setEditForm(f => ({ ...f, type: e.target.value }))}>
+                <option value="out">Money Out</option>
+                <option value="in">Money In</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Amount *</label>
+              <input className="form-input" type="number" step="0.01" min="0" value={editForm.amount} onChange={e => setEditForm(f => ({ ...f, amount: e.target.value }))} autoFocus />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Date</label>
+              <input className="form-input" type="date" value={editForm.date} onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Reason *</label>
+              <input className="form-input" value={editForm.reason} onChange={e => setEditForm(f => ({ ...f, reason: e.target.value }))} />
+            </div>
+          </div>
+          <div className="form-actions">
+            <button className="btn btn-danger" onClick={() => deleteEntry(editForm.id)} style={{ marginRight: 'auto' }}>Delete</button>
+            <button className="btn" onClick={() => setEditForm(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveEdit} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Transfer Modal */}
+      <Modal open={transferModal} onClose={() => setTransferModal(false)} title="Transfer Between Accounts">
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">From Account *</label>
+            <select className="form-input" value={transferForm.from_id} onChange={e => setTransferForm(f => ({ ...f, from_id: e.target.value }))}>
+              <option value="">— select —</option>
+              {(accounts || []).map(a => {
+                const bal = getBalance(a.id)
+                return <option key={a.id} value={a.id}>{a.name} (bal: {a.currency} {fmt(bal)})</option>
+              })}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">To Account *</label>
+            <select className="form-input" value={transferForm.to_id} onChange={e => setTransferForm(f => ({ ...f, to_id: e.target.value }))}>
+              <option value="">— select —</option>
+              {(accounts || []).filter(a => a.id !== transferForm.from_id).map(a => (
+                <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Amount *</label>
+            <input className="form-input" type="number" step="0.01" min="0" value={transferForm.amount} onChange={e => setTransferForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" autoFocus />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Date</label>
+            <input className="form-input" type="date" value={transferForm.date} onChange={e => setTransferForm(f => ({ ...f, date: e.target.value }))} />
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Notes (optional)</label>
+          <input className="form-input" value={transferForm.notes} onChange={e => setTransferForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. MoMo withdrawal to bank" />
+        </div>
+        <div className="form-actions">
+          <button className="btn" onClick={() => setTransferModal(false)}>Cancel</button>
+          <button className="btn btn-primary" onClick={saveTransfer} disabled={saving}>{saving ? 'Transferring…' : 'Transfer'}</button>
+        </div>
+      </Modal>
+
       {/* Add / Edit Account Modal */}
       <Modal open={accModal} onClose={() => setAccModal(false)} title={accForm.id ? 'Edit Account' : 'Add Account'}>
         <div className="form-group">
           <label className="form-label">Account Name *</label>
-          <input
-            className="form-input"
-            value={accForm.name}
-            onChange={e => setAccForm(f => ({ ...f, name: e.target.value }))}
-            placeholder="e.g. Bank of Kigali, BPR, MTN MoMo, Shop Till"
-            autoFocus
-          />
+          <input className="form-input" value={accForm.name} onChange={e => setAccForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Bank of Kigali, BPR, MTN MoMo" autoFocus />
         </div>
         <div className="form-row">
           <div className="form-group">
@@ -283,9 +430,7 @@ export default function Ledger() {
         </div>
         <div className="form-actions">
           <button className="btn" onClick={() => setAccModal(false)}>Cancel</button>
-          <button className="btn btn-primary" onClick={saveAcc} disabled={saving}>
-            {saving ? 'Saving…' : accForm.id ? 'Update Account' : 'Add Account'}
-          </button>
+          <button className="btn btn-primary" onClick={saveAcc} disabled={saving}>{saving ? 'Saving…' : accForm.id ? 'Update Account' : 'Add Account'}</button>
         </div>
       </Modal>
     </>

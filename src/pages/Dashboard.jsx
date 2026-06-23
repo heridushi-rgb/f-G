@@ -19,7 +19,7 @@ export default function Dashboard() {
     const [accRes, ctRes, payRes, itemsRes, prodsRes, ordersRes] = await Promise.all([
       sb.from('accounts').select('*').order('sort_order').order('created_at'),
       sb.from('cash_transactions').select('account_id, type, amount'),
-      sb.from('payments').select('amount, account_id, date'),
+      sb.from('payments').select('amount, order_id'),
       sb.from('order_items').select('qty, unit_price, product_id, orders(date), products(name)'),
       sb.from('products').select('id, name, qty_on_hand, reorder_level').order('name'),
       sb.from('orders').select('id, date, status, customers(name), order_items(qty, unit_price)').order('date', { ascending: false }).order('created_at', { ascending: false }).limit(6),
@@ -31,16 +31,15 @@ export default function Dashboard() {
     const items = itemsRes.data || []
     const prods = prodsRes.data || []
 
-    // Balance per account
+    // Balance per account — only from cash_transactions (payments auto-create a cash_transaction on save)
     const bals = {}
     for (const acc of accs) {
       const txIn  = cts.filter(t => t.account_id === acc.id && t.type === 'in').reduce((s, t) => s + t.amount, 0)
       const txOut = cts.filter(t => t.account_id === acc.id && t.type === 'out').reduce((s, t) => s + t.amount, 0)
-      const fromPay = pays.filter(p => p.account_id === acc.id).reduce((s, p) => s + p.amount, 0)
-      bals[acc.id] = txIn - txOut + fromPay
+      bals[acc.id] = txIn - txOut
     }
 
-    // AR: total invoiced minus all RWF payments received
+    // AR: total invoiced minus total payments received
     const totalInvoiced = items.reduce((s, i) => s + i.qty * i.unit_price, 0)
     const totalPaid = pays.reduce((s, p) => s + p.amount, 0)
     const ar = Math.max(0, totalInvoiced - totalPaid)

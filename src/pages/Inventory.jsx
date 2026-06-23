@@ -9,10 +9,13 @@ const COUNTRIES = ['China', 'Kenya', 'Other']
 
 const EMPTY_PROD = { id: '', name: '', sku: '', category: '', supplier_country: 'China', unit: 'piece', cost_price: '', sale_price: '', qty_on_hand: '', reorder_level: '' }
 
-function generateSKU(name, category) {
-  const prefix = (category || name || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3) || 'PRD'
-  const suffix = Math.floor(1000 + Math.random() * 9000)
-  return `${prefix}-${suffix}`
+function nextSKU(products) {
+  const nums = (products || []).map(p => {
+    const m = (p.sku || '').match(/^N\.O-(\d+)$/)
+    return m ? parseInt(m[1], 10) : 0
+  })
+  const next = Math.max(0, ...nums) + 1
+  return `N.O-${String(next).padStart(4, '0')}`
 }
 const EMPTY_STOCK_IN = { product_id: '', qty: '', unit_cost: '', supplier_note: '', date: '', notes: '' }
 const EMPTY_ADJUST = { product_id: '', direction: 'out', qty: '', notes: '' }
@@ -47,7 +50,7 @@ export default function Inventory() {
 
   // --- Add / Edit product ---
   function openNew() {
-    setForm(EMPTY_PROD)
+    setForm({ ...EMPTY_PROD, sku: nextSKU(products) })
     setFormModal(true)
   }
 
@@ -222,30 +225,20 @@ export default function Inventory() {
             <input
               className="form-input"
               value={form.name}
-              onChange={e => {
-                const name = e.target.value
-                setForm(f => ({
-                  ...f,
-                  name,
-                  sku: f.sku ? f.sku : generateSKU(name, f.category),
-                }))
-              }}
+              onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
               placeholder="e.g. Cotton T-Shirt"
               autoFocus
             />
           </div>
           <div className="form-group">
-            <label className="form-label">SKU</label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input className="form-input" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder="auto-generated" style={{ flex: 1 }} />
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => setForm(f => ({ ...f, sku: generateSKU(f.name, f.category) }))}
-                title="Generate new SKU"
-                style={{ flexShrink: 0 }}
-              >↺</button>
-            </div>
+            <label className="form-label">SKU {!form.id && <span style={{ color: 'var(--t3)', fontWeight: 400 }}>(auto-assigned)</span>}</label>
+            <input
+              className="form-input"
+              value={form.sku}
+              readOnly={!form.id}
+              onChange={e => form.id && setForm(f => ({ ...f, sku: e.target.value }))}
+              style={{ background: !form.id ? 'var(--s2)' : '#fff', fontFamily: 'DM Mono, monospace', fontWeight: 600 }}
+            />
           </div>
         </div>
         <div className="form-row">

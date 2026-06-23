@@ -93,6 +93,7 @@ create table if not exists payments (
 -- Migrations for tables that existed before the multi-account redesign
 alter table payments add column if not exists account_id uuid references accounts(id);
 alter table payments alter column method drop not null;
+alter table payments alter column destination drop not null;
 alter table cash_transactions add column if not exists account_id uuid references accounts(id);
 
 -- ── Ledger (expenses, supplier payments, transfers between accounts) ─────────

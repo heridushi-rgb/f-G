@@ -90,10 +90,9 @@ create table if not exists payments (
   created_at timestamptz not null default now()
 );
 
--- Migration: add account_id if payments table already existed with old schema
+-- Migrations for tables that existed before the multi-account redesign
 alter table payments add column if not exists account_id uuid references accounts(id);
-
--- Migration: add account_id if cash_transactions table already existed with old schema
+alter table payments alter column method drop not null;
 alter table cash_transactions add column if not exists account_id uuid references accounts(id);
 
 -- ── Ledger (expenses, supplier payments, transfers between accounts) ─────────

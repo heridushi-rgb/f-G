@@ -15,15 +15,14 @@ export default function Reports() {
     setLoading(true)
     const [itemsRes, paysRes] = await Promise.all([
       sb.from('order_items').select('qty, unit_price, orders(date)').gte('orders.date', from).lte('orders.date', to),
-      sb.from('payments').select('amount, destination').gte('date', from).lte('date', to),
+      sb.from('payments').select('amount').gte('date', from).lte('date', to),
     ])
     const items = (itemsRes.data || []).filter(i => i.orders)
     const pays = paysRes.data || []
     const sales = items.reduce((s, i) => s + i.qty * i.unit_price, 0)
     const received = pays.reduce((s, p) => s + p.amount, 0)
-    const toBank = pays.filter(p => p.destination === 'bank').reduce((s, p) => s + p.amount, 0)
-    const toSafe = pays.filter(p => p.destination === 'safe').reduce((s, p) => s + p.amount, 0)
-    setSummary({ sales, received, toBank, toSafe })
+    const outstanding = Math.max(0, sales - received)
+    setSummary({ sales, received, outstanding })
     setLoading(false)
   }
 
@@ -76,22 +75,24 @@ export default function Reports() {
 
   async function exportPayments() {
     const { data } = await sb.from('payments')
-      .select('*, customers(name), orders(date)')
+      .select('*, customers(name), orders(date), accounts(name, currency)')
       .gte('date', from).lte('date', to)
       .order('date', { ascending: false })
     exportCSV((data || []).map(p => ({
-      Date: p.date, Customer: p.customers?.name, Amount_RWF: p.amount,
-      Method: p.method, Destination: p.destination,
+      Date: p.date, Customer: p.customers?.name, Amount: p.amount,
+      Currency: p.accounts?.currency || 'RWF', Method: p.method,
+      Account: p.accounts?.name || '',
       LinkedOrderDate: p.orders?.date || '', Notes: p.notes || '',
     })), `4fg_payments_${from}_to_${to}.csv`)
   }
 
   async function exportTransactions() {
     const { data } = await sb.from('cash_transactions')
-      .select('*').gte('date', from).lte('date', to)
+      .select('*, accounts(name, currency)').gte('date', from).lte('date', to)
       .order('date', { ascending: false })
     exportCSV((data || []).map(t => ({
-      Date: t.date, Account: t.account, Type: t.type, Amount_RWF: t.amount, Reason: t.reason,
+      Date: t.date, Account: t.accounts?.name || '', Currency: t.accounts?.currency || 'RWF',
+      Type: t.type, Amount: t.amount, Reason: t.reason,
     })), `4fg_ledger_${from}_to_${to}.csv`)
   }
 
@@ -114,7 +115,7 @@ export default function Reports() {
       </div>
 
       {/* Summary for date range */}
-      <div className="metrics" style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))', marginBottom: 18 }}>
+      <div className="metrics" style={{ gridTemplateColumns: 'repeat(3, minmax(0,1fr))', marginBottom: 18 }}>
         <div className="mc">
           <div className="mc-label">Sales (invoiced)</div>
           <div className="mc-value" style={{ fontSize: 18 }}>{loading ? '…' : 'RWF ' + fmt(summary?.sales)}</div>
@@ -124,12 +125,8 @@ export default function Reports() {
           <div className="mc-value" style={{ fontSize: 18, color: 'var(--ok)' }}>{loading ? '…' : 'RWF ' + fmt(summary?.received)}</div>
         </div>
         <div className="mc">
-          <div className="mc-label">→ to Bank</div>
-          <div className="mc-value" style={{ fontSize: 18 }}>{loading ? '…' : 'RWF ' + fmt(summary?.toBank)}</div>
-        </div>
-        <div className="mc">
-          <div className="mc-label">→ to Safe</div>
-          <div className="mc-value" style={{ fontSize: 18 }}>{loading ? '…' : 'RWF ' + fmt(summary?.toSafe)}</div>
+          <div className="mc-label">Still Outstanding</div>
+          <div className="mc-value" style={{ fontSize: 18, color: summary?.outstanding > 0 ? 'var(--wn)' : 'var(--t3)' }}>{loading ? '…' : 'RWF ' + fmt(summary?.outstanding)}</div>
         </div>
       </div>
 

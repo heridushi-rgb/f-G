@@ -8,6 +8,12 @@ const UNITS = ['piece', 'box', 'kg', 'set', 'carton', 'bag', 'litre', 'pair', 'r
 const COUNTRIES = ['China', 'Kenya', 'Other']
 
 const EMPTY_PROD = { id: '', name: '', sku: '', category: '', supplier_country: 'China', unit: 'piece', cost_price: '', sale_price: '', qty_on_hand: '', reorder_level: '' }
+
+function generateSKU(name, category) {
+  const prefix = (category || name || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3) || 'PRD'
+  const suffix = Math.floor(1000 + Math.random() * 9000)
+  return `${prefix}-${suffix}`
+}
 const EMPTY_STOCK_IN = { product_id: '', qty: '', unit_cost: '', supplier_note: '', date: '', notes: '' }
 const EMPTY_ADJUST = { product_id: '', direction: 'out', qty: '', notes: '' }
 
@@ -213,11 +219,33 @@ export default function Inventory() {
         <div className="form-row">
           <div className="form-group">
             <label className="form-label">Product Name *</label>
-            <input className="form-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Cotton T-Shirt" autoFocus />
+            <input
+              className="form-input"
+              value={form.name}
+              onChange={e => {
+                const name = e.target.value
+                setForm(f => ({
+                  ...f,
+                  name,
+                  sku: f.sku ? f.sku : generateSKU(name, f.category),
+                }))
+              }}
+              placeholder="e.g. Cotton T-Shirt"
+              autoFocus
+            />
           </div>
           <div className="form-group">
             <label className="form-label">SKU</label>
-            <input className="form-input" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder="e.g. TSH-001" />
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input className="form-input" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder="auto-generated" style={{ flex: 1 }} />
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setForm(f => ({ ...f, sku: generateSKU(f.name, f.category) }))}
+                title="Generate new SKU"
+                style={{ flexShrink: 0 }}
+              >↺</button>
+            </div>
           </div>
         </div>
         <div className="form-row">

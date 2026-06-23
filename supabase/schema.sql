@@ -93,6 +93,9 @@ create table if not exists payments (
 -- Migration: add account_id if payments table already existed with old schema
 alter table payments add column if not exists account_id uuid references accounts(id);
 
+-- Migration: add account_id if cash_transactions table already existed with old schema
+alter table cash_transactions add column if not exists account_id uuid references accounts(id);
+
 -- ── Ledger (expenses, supplier payments, transfers between accounts) ─────────
 create table if not exists cash_transactions (
   id uuid primary key default gen_random_uuid(),

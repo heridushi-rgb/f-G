@@ -118,7 +118,7 @@ export default function Payments() {
             <button className="btn btn-sm" onClick={() => exportCSV(
               (payments || []).map(p => ({
                 Date: p.date, Customer: p.customers?.name, Amount: p.amount,
-                Method: p.method, Account: p.accounts?.name, Currency: p.accounts?.currency,
+                Account: p.accounts?.name, Currency: p.accounts?.currency,
                 OrderDate: p.orders?.date || '', Notes: p.notes || '',
               })), '4fg_payments.csv'
             )}>↓ CSV</button>

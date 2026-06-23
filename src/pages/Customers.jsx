@@ -6,7 +6,6 @@ import Modal from '../components/Modal'
 
 const EMPTY_FORM = { id: '', name: '', phone: '', business_name: '', notes: '' }
 const EMPTY_PAY  = { order_id: '', amount: '', account_id: '', date: '' }
-const METHOD_LABEL = { mobile_money: 'Mobile Money', cash: 'Cash', bank_transfer: 'Bank Transfer', check: 'Check' }
 
 const STATUS_BADGE = {
   pending:        <span className="badge badge-x">Pending</span>,
@@ -147,7 +146,7 @@ export default function Customers() {
       events.push({ date: o.date, type: 'order', label: 'Order', sub: STATUS_BADGE[o.status] || STATUS_BADGE.pending, debit: total, credit: 0, id: o.id })
     }
     for (const p of (pays || [])) {
-      events.push({ date: p.date, type: 'payment', label: `Payment (${METHOD_LABEL[p.method] || p.method})`, sub: p.accounts?.name || '—', debit: 0, credit: p.amount, id: p.id })
+      events.push({ date: p.date, type: 'payment', label: 'Payment', sub: p.accounts?.name || '—', debit: 0, credit: p.amount, id: p.id })
     }
     // Sort oldest first so running balance makes sense, then reverse for display
     events.sort((a, b) => a.date.localeCompare(b.date))
@@ -342,7 +341,7 @@ export default function Customers() {
                       ? <tr><td colSpan="6"><div className="loading"><span className="spinner" /></div></td></tr>
                       : statement.length === 0
                         ? <tr><td colSpan="6"><div className="empty">No history yet</div></td></tr>
-                        : statement.map((e, i) => (
+                        : statement.map((e) => (
                             <tr key={`${e.type}-${e.id}`} style={{ background: e.type === 'payment' ? '#f6fdf9' : '' }}>
                               <td style={{ color: 'var(--t3)' }}>{e.date}</td>
                               <td style={{ fontWeight: 500 }}>{e.label}</td>

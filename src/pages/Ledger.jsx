@@ -105,6 +105,7 @@ export default function Ledger() {
   async function deleteEntry(id) {
     if (!window.confirm('Delete this ledger entry?')) return
     await sb.from('cash_transactions').delete().eq('id', id)
+    setEditForm(null)
     notify('Entry deleted')
     load()
   }

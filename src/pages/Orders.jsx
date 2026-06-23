@@ -121,20 +121,22 @@ export default function Orders() {
     if (payNow && payAccountId) {
       const amount = parseFloat(payAmount) || lineTotal
       const custName = customers.find(c => c.id === form.customer_id)?.name || 'Customer'
-      await sb.from('payments').insert({
+      const { error: pe } = await sb.from('payments').insert({
         customer_id: form.customer_id,
         order_id: ord.id,
         amount,
         account_id: payAccountId,
         date: form.date,
       })
-      await sb.from('cash_transactions').insert({
+      if (pe) { setSaving(false); notify('Order saved but payment failed: ' + pe.message, 'error'); load(); return }
+      const { error: txe } = await sb.from('cash_transactions').insert({
         account_id: payAccountId,
         type: 'in',
         amount,
         reason: `Payment from ${custName} (order)`,
         date: form.date,
       })
+      if (txe) { setSaving(false); notify('Payment saved but ledger entry failed: ' + txe.message, 'error'); load(); return }
       const newStatus = amount >= lineTotal ? 'paid' : 'partially_paid'
       await sb.from('orders').update({ status: newStatus }).eq('id', ord.id)
     }
@@ -209,13 +211,14 @@ export default function Orders() {
     if (error) { setSaving(false); notify(error.message, 'error'); return }
 
     // Auto-create ledger entry
-    await sb.from('cash_transactions').insert({
+    const { error: txe } = await sb.from('cash_transactions').insert({
       account_id: payForm.account_id,
       type: 'in',
       amount,
       reason: `Payment from ${custName} (order)`,
       date: payForm.date,
     })
+    if (txe) { setSaving(false); notify('Payment saved but ledger entry failed: ' + txe.message, 'error'); return }
 
     // Update order status
     const totalPaidNow = orderPaid + amount

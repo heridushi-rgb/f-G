@@ -112,13 +112,14 @@ export default function Customers() {
     if (error) { setSaving(false); notify(error.message, 'error'); return }
 
     // Auto ledger entry
-    await sb.from('cash_transactions').insert({
+    const { error: txErr } = await sb.from('cash_transactions').insert({
       account_id: payForm.account_id,
       type: 'in',
       amount,
       reason: `Payment from ${viewCust.name}${payForm.order_id ? ' (order)' : ''}`,
       date: payForm.date,
     })
+    if (txErr) { setSaving(false); notify('Payment saved but ledger entry failed: ' + txErr.message, 'error'); return }
 
     // Update order status if linked
     if (payForm.order_id) {

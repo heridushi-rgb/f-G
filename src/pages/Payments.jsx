@@ -81,13 +81,14 @@ export default function Payments() {
 
     // Auto-create a ledger entry so it shows up in account balance
     const custName = customers.find(c => c.id === form.customer_id)?.name || 'Customer'
-    await sb.from('cash_transactions').insert({
+    const { error: txErr } = await sb.from('cash_transactions').insert({
       account_id: form.account_id,
       type: 'in',
       amount,
       reason: `Payment received from ${custName}${form.order_id ? ' (order)' : ''}`,
       date: form.date,
     })
+    if (txErr) { setSaving(false); notify('Payment saved but ledger entry failed: ' + txErr.message, 'error'); return }
 
     // Update order status based on total paid vs order total
     if (form.order_id) {

@@ -95,6 +95,7 @@ alter table payments add column if not exists account_id uuid references account
 alter table payments alter column method drop not null;
 alter table payments alter column destination drop not null;
 alter table cash_transactions add column if not exists account_id uuid references accounts(id);
+alter table cash_transactions alter column account drop not null;
 
 -- ── Ledger (expenses, supplier payments, transfers between accounts) ─────────
 create table if not exists cash_transactions (

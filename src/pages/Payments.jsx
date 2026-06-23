@@ -7,20 +7,13 @@ import Modal from '../components/Modal'
 const METHODS = ['cash', 'mobile_money', 'bank_transfer', 'check']
 const METHOD_LABEL = { cash: 'Cash', mobile_money: 'Mobile Money', bank_transfer: 'Bank Transfer', check: 'Check' }
 
-// Default destination based on payment method
-function defaultDestination(method) {
-  return method === 'cash' ? 'safe' : 'bank'
-}
-
-const EMPTY_FORM = {
-  customer_id: '', order_id: '', amount: '', method: 'cash',
-  destination: 'safe', date: '', notes: '',
-}
+const EMPTY_FORM = { customer_id: '', order_id: '', amount: '', method: 'mobile_money', account_id: '', date: '', notes: '' }
 
 export default function Payments() {
   const notify = useNotify()
   const [payments, setPayments] = useState(null)
   const [customers, setCustomers] = useState([])
+  const [accounts, setAccounts] = useState([])
   const [custOrders, setCustOrders] = useState([])
   const [form, setForm] = useState(EMPTY_FORM)
   const [modal, setModal] = useState(false)
@@ -29,27 +22,34 @@ export default function Payments() {
   useEffect(() => { load() }, [])
 
   async function load() {
-    const [payRes, custRes] = await Promise.all([
-      sb.from('payments').select('*, customers(name), orders(date)').order('date', { ascending: false }).order('created_at', { ascending: false }).limit(100),
+    const [payRes, custRes, accRes] = await Promise.all([
+      sb.from('payments')
+        .select('*, customers(name), orders(date), accounts(name, currency)')
+        .order('date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(100),
       sb.from('customers').select('id, name').order('name'),
+      sb.from('accounts').select('*').order('sort_order').order('created_at'),
     ])
     setPayments(payRes.data || [])
     setCustomers(custRes.data || [])
+    setAccounts(accRes.data || [])
   }
 
   async function onCustomerChange(customerId) {
     setForm(f => ({ ...f, customer_id: customerId, order_id: '' }))
     if (!customerId) { setCustOrders([]); return }
-    const { data } = await sb.from('orders').select('id, date, status, order_items(qty, unit_price)').eq('customer_id', customerId).order('date', { ascending: false })
+    const { data } = await sb.from('orders')
+      .select('id, date, status, order_items(qty, unit_price)')
+      .eq('customer_id', customerId)
+      .order('date', { ascending: false })
     setCustOrders(data || [])
   }
 
-  function onMethodChange(method) {
-    setForm(f => ({ ...f, method, destination: defaultDestination(method) }))
-  }
-
   function openNew() {
-    setForm({ ...EMPTY_FORM, date: new Date().toISOString().split('T')[0] })
+    // Default account_id to first account if available
+    const defaultAcc = accounts[0]?.id || ''
+    setForm({ ...EMPTY_FORM, date: new Date().toISOString().split('T')[0], account_id: defaultAcc })
     setCustOrders([])
     setModal(true)
   }
@@ -58,23 +58,26 @@ export default function Payments() {
     const amount = parseFloat(form.amount)
     if (!form.customer_id) { notify('Select a customer', 'error'); return }
     if (!amount || amount <= 0) { notify('Enter a valid amount', 'error'); return }
+    if (!form.account_id) { notify('Select which account the money goes into', 'error'); return }
     setSaving(true)
+
     const { error } = await sb.from('payments').insert({
       customer_id: form.customer_id,
       order_id: form.order_id || null,
       amount,
       method: form.method,
-      destination: form.destination,
+      account_id: form.account_id,
       date: form.date,
       notes: form.notes || null,
     })
-    // Update order status to partially_paid if linked and not already paid
+
     if (!error && form.order_id) {
       const ord = custOrders.find(o => o.id === form.order_id)
       if (ord && ord.status !== 'paid') {
         await sb.from('orders').update({ status: 'partially_paid' }).eq('id', form.order_id)
       }
     }
+
     setSaving(false)
     if (error) { notify(error.message, 'error'); return }
     notify('Payment recorded')
@@ -95,8 +98,8 @@ export default function Payments() {
           <div style={{ display: 'flex', gap: 7 }}>
             <button className="btn btn-sm" onClick={() => exportCSV(
               (payments || []).map(p => ({
-                Date: p.date, Customer: p.customers?.name, Amount_RWF: p.amount,
-                Method: p.method, Destination: p.destination,
+                Date: p.date, Customer: p.customers?.name, Amount: p.amount,
+                Method: p.method, Account: p.accounts?.name, Currency: p.accounts?.currency,
                 OrderDate: p.orders?.date || '', Notes: p.notes || '',
               })), '4fg_payments.csv'
             )}>↓ CSV</button>
@@ -106,7 +109,7 @@ export default function Payments() {
         <div className="tbl-wrap">
           <table>
             <thead>
-              <tr><th>Date</th><th>Customer</th><th>Amount (RWF)</th><th>Method</th><th>Goes To</th><th>Linked Order</th><th>Notes</th></tr>
+              <tr><th>Date</th><th>Customer</th><th>Amount</th><th>Method</th><th>Into Account</th><th>Linked Order</th><th>Notes</th></tr>
             </thead>
             <tbody>
               {!payments
@@ -117,13 +120,11 @@ export default function Payments() {
                       <tr key={p.id}>
                         <td style={{ color: 'var(--t3)' }}>{p.date}</td>
                         <td style={{ fontWeight: 500 }}>{p.customers?.name || '—'}</td>
-                        <td className="mono" style={{ fontWeight: 600, color: 'var(--ok)' }}>RWF {fmt(p.amount)}</td>
-                        <td>{METHOD_LABEL[p.method] || p.method}</td>
-                        <td>
-                          <span className={`badge ${p.destination === 'bank' ? 'badge-b' : 'badge-x'}`}>
-                            {p.destination === 'bank' ? 'Bank' : 'Safe'}
-                          </span>
+                        <td className="mono" style={{ fontWeight: 600, color: 'var(--ok)' }}>
+                          {p.accounts?.currency || 'RWF'} {fmt(p.amount)}
                         </td>
+                        <td>{METHOD_LABEL[p.method] || p.method}</td>
+                        <td style={{ fontWeight: 500 }}>{p.accounts?.name || '—'}</td>
                         <td style={{ color: 'var(--t3)' }}>{p.orders?.date || '—'}</td>
                         <td style={{ color: 'var(--t3)' }}>{p.notes || '—'}</td>
                       </tr>
@@ -147,7 +148,7 @@ export default function Payments() {
           <div className="form-group">
             <label className="form-label">Link to Order (optional)</label>
             <select className="form-input" value={form.order_id} onChange={e => setForm(f => ({ ...f, order_id: e.target.value }))}>
-              <option value="">— general payment (no specific order) —</option>
+              <option value="">— general balance payment —</option>
               {custOrders.map(o => <option key={o.id} value={o.id}>{orderLabel(o)}</option>)}
             </select>
           </div>
@@ -155,7 +156,7 @@ export default function Payments() {
 
         <div className="form-row">
           <div className="form-group">
-            <label className="form-label">Amount (RWF) *</label>
+            <label className="form-label">Amount *</label>
             <input className="form-input" type="number" step="1" min="0" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" />
           </div>
           <div className="form-group">
@@ -167,15 +168,15 @@ export default function Payments() {
         <div className="form-row">
           <div className="form-group">
             <label className="form-label">Payment Method</label>
-            <select className="form-input" value={form.method} onChange={e => onMethodChange(e.target.value)}>
+            <select className="form-input" value={form.method} onChange={e => setForm(f => ({ ...f, method: e.target.value }))}>
               {METHODS.map(m => <option key={m} value={m}>{METHOD_LABEL[m]}</option>)}
             </select>
           </div>
           <div className="form-group">
-            <label className="form-label">Money Goes To</label>
-            <select className="form-input" value={form.destination} onChange={e => setForm(f => ({ ...f, destination: e.target.value }))}>
-              <option value="safe">Cash Safe</option>
-              <option value="bank">Bank Account</option>
+            <label className="form-label">Money Goes Into *</label>
+            <select className="form-input" value={form.account_id} onChange={e => setForm(f => ({ ...f, account_id: e.target.value }))}>
+              <option value="">— select account —</option>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
             </select>
           </div>
         </div>

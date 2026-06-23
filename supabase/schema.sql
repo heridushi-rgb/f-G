@@ -1,8 +1,27 @@
 -- 4F and G Trading Limited — Database Schema
--- Run this in the Supabase SQL Editor for your new project.
--- All monetary balances (bank, safe, AR) are computed from these tables — never stored as static numbers.
--- Safe to re-run: uses IF NOT EXISTS and drops policies before recreating them.
+-- Safe to re-run: uses IF NOT EXISTS and drops policies before recreating.
+-- Run the drop script first if you need a clean reset:
+--   drop table if exists cash_transactions,payments,order_items,orders,customers,stock_movements,products,accounts cascade;
 
+-- ── Accounts (Mobile Money, Cash Safe, Bank accounts) ──────────────────────
+create table if not exists accounts (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  type text not null check (type in ('cash','mobile_money','bank')),
+  currency text not null default 'RWF' check (currency in ('RWF','USD')),
+  sort_order int not null default 99,
+  created_at timestamptz not null default now()
+);
+
+-- Default accounts (only inserted if accounts table is empty)
+insert into accounts (name, type, currency, sort_order)
+select * from (values
+  ('Mobile Money', 'mobile_money', 'RWF', 1),
+  ('Cash Safe',    'cash',         'RWF', 2)
+) as v(name, type, currency, sort_order)
+where not exists (select 1 from accounts);
+
+-- ── Products ────────────────────────────────────────────────────────────────
 create table if not exists products (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -17,7 +36,6 @@ create table if not exists products (
   created_at timestamptz not null default now()
 );
 
--- Every inventory change is recorded here (stock-in, order fulfillment, manual adjustments)
 create table if not exists stock_movements (
   id uuid primary key default gen_random_uuid(),
   product_id uuid references products(id) on delete cascade,
@@ -31,6 +49,7 @@ create table if not exists stock_movements (
   created_at timestamptz not null default now()
 );
 
+-- ── Customers ───────────────────────────────────────────────────────────────
 create table if not exists customers (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -40,6 +59,7 @@ create table if not exists customers (
   created_at timestamptz not null default now()
 );
 
+-- ── Orders ──────────────────────────────────────────────────────────────────
 create table if not exists orders (
   id uuid primary key default gen_random_uuid(),
   customer_id uuid references customers(id),
@@ -57,24 +77,24 @@ create table if not exists order_items (
   unit_price numeric(14,2) not null
 );
 
--- Customer payments received (cash/mobile money/bank transfer/check)
--- destination: where the physical money ended up (bank account or cash safe)
+-- ── Payments (customer payments received) ───────────────────────────────────
+-- account_id: which account the money went into
 create table if not exists payments (
   id uuid primary key default gen_random_uuid(),
   customer_id uuid references customers(id),
   order_id uuid references orders(id),
   amount numeric(14,2) not null,
   method text not null check (method in ('cash','mobile_money','bank_transfer','check')),
-  destination text not null check (destination in ('bank','safe')),
+  account_id uuid references accounts(id),
   date date not null default current_date,
   notes text,
   created_at timestamptz not null default now()
 );
 
--- Manual ledger entries: supplier payments, expenses, transfers between bank and safe
+-- ── Ledger (expenses, supplier payments, transfers between accounts) ─────────
 create table if not exists cash_transactions (
   id uuid primary key default gen_random_uuid(),
-  account text not null check (account in ('bank','safe')),
+  account_id uuid not null references accounts(id),
   type text not null check (type in ('in','out')),
   amount numeric(14,2) not null,
   reason text not null,
@@ -82,7 +102,8 @@ create table if not exists cash_transactions (
   created_at timestamptz not null default now()
 );
 
--- Enable Row Level Security
+-- ── Row Level Security ───────────────────────────────────────────────────────
+alter table accounts enable row level security;
 alter table products enable row level security;
 alter table stock_movements enable row level security;
 alter table customers enable row level security;
@@ -91,7 +112,11 @@ alter table order_items enable row level security;
 alter table payments enable row level security;
 alter table cash_transactions enable row level security;
 
--- Drop policies if they exist, then recreate (safe to re-run)
+drop policy if exists "auth read accounts" on accounts;
+drop policy if exists "auth write accounts" on accounts;
+create policy "auth read accounts" on accounts for select using (auth.role() = 'authenticated');
+create policy "auth write accounts" on accounts for all using (auth.role() = 'authenticated');
+
 drop policy if exists "auth read products" on products;
 drop policy if exists "auth write products" on products;
 create policy "auth read products" on products for select using (auth.role() = 'authenticated');

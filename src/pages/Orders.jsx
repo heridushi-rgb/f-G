@@ -10,37 +10,46 @@ const STATUS_META = {
   partially_paid: { badge: 'badge-a', label: 'Part Paid' },
   paid:           { badge: 'badge-g', label: 'Paid' },
 }
+const METHODS = ['mobile_money', 'cash', 'bank_transfer', 'check']
+const METHOD_LABEL = { mobile_money: 'Mobile Money', cash: 'Cash', bank_transfer: 'Bank Transfer', check: 'Check' }
 
 const EMPTY_FORM = { customer_id: '', date: '', status: 'pending', notes: '' }
 const EMPTY_LINE = { product_id: '', qty: '1', unit_price: '' }
+const EMPTY_PAY  = { amount: '', method: 'mobile_money', account_id: '', date: '' }
 
 export default function Orders() {
   const notify = useNotify()
   const [orders, setOrders] = useState(null)
   const [customers, setCustomers] = useState([])
   const [products, setProducts] = useState([])
+  const [accounts, setAccounts] = useState([])
   const [form, setForm] = useState(EMPTY_FORM)
   const [lines, setLines] = useState([{ ...EMPTY_LINE }])
   const [viewOrder, setViewOrder] = useState(null)
   const [viewItems, setViewItems] = useState(null)
+  const [orderPaid, setOrderPaid] = useState(0)   // total already paid on viewed order
   const [formModal, setFormModal] = useState(false)
   const [viewModal, setViewModal] = useState(false)
+  const [paySection, setPaySection] = useState(false)
+  const [payForm, setPayForm] = useState(EMPTY_PAY)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { load() }, [])
 
   async function load() {
-    const [ordRes, custRes, prodRes] = await Promise.all([
+    const [ordRes, custRes, prodRes, accRes] = await Promise.all([
       sb.from('orders')
         .select('*, customers(name), order_items(qty, unit_price)')
         .order('date', { ascending: false })
         .order('created_at', { ascending: false }),
       sb.from('customers').select('id, name').order('name'),
       sb.from('products').select('id, name, sale_price, qty_on_hand, unit').order('name'),
+      sb.from('accounts').select('*').order('sort_order').order('created_at'),
     ])
     setOrders(ordRes.data || [])
     setCustomers(custRes.data || [])
     setProducts(prodRes.data || [])
+    setAccounts(accRes.data || [])
   }
 
   const orderTotal = o => (o.order_items || []).reduce((s, i) => s + i.qty * i.unit_price, 0)
@@ -68,7 +77,6 @@ export default function Orders() {
     if (!form.customer_id) { notify('Select a customer', 'error'); return }
     const valid = lines.filter(l => l.product_id && parseFloat(l.qty) > 0)
     if (valid.length === 0) { notify('Add at least one line item with a product and quantity', 'error'); return }
-
     setSaving(true)
 
     const { data: ord, error: oe } = await sb.from('orders').insert({
@@ -77,7 +85,6 @@ export default function Orders() {
       status: form.status,
       notes: form.notes || null,
     }).select().single()
-
     if (oe) { setSaving(false); notify(oe.message, 'error'); return }
 
     const { error: ie } = await sb.from('order_items').insert(
@@ -90,7 +97,6 @@ export default function Orders() {
     )
     if (ie) { setSaving(false); notify(ie.message, 'error'); return }
 
-    // Deduct inventory now if order is created as fulfilled
     if (form.status === 'fulfilled') {
       await deductInventory(ord.id, valid)
     }
@@ -130,18 +136,60 @@ export default function Orders() {
     load()
   }
 
-  async function markPaid(o) {
-    await sb.from('orders').update({ status: 'paid' }).eq('id', o.id)
-    notify('Order marked as paid')
-    load()
-  }
-
   async function openView(o) {
     setViewOrder(o)
     setViewModal(true)
     setViewItems(null)
-    const { data } = await sb.from('order_items').select('*, products(name, unit)').eq('order_id', o.id)
-    setViewItems(data || [])
+    setPaySection(false)
+    setPayForm({ ...EMPTY_PAY, date: new Date().toISOString().split('T')[0], account_id: accounts[0]?.id || '' })
+    const [itemsRes, paysRes] = await Promise.all([
+      sb.from('order_items').select('*, products(name, unit)').eq('order_id', o.id),
+      sb.from('payments').select('amount').eq('order_id', o.id),
+    ])
+    setViewItems(itemsRes.data || [])
+    setOrderPaid((paysRes.data || []).reduce((s, p) => s + p.amount, 0))
+  }
+
+  async function savePayment() {
+    const amount = parseFloat(payForm.amount)
+    if (!amount || amount <= 0) { notify('Enter a valid amount', 'error'); return }
+    if (!payForm.account_id) { notify('Select which account the money goes into', 'error'); return }
+    setSaving(true)
+
+    // Get customer name for ledger reason
+    const custName = viewOrder?.customers?.name || 'Customer'
+    const total = orderTotal(viewOrder)
+
+    // Insert payment record
+    const { error } = await sb.from('payments').insert({
+      customer_id: viewOrder.customer_id,
+      order_id: viewOrder.id,
+      amount,
+      method: payForm.method,
+      account_id: payForm.account_id,
+      date: payForm.date,
+    })
+    if (error) { setSaving(false); notify(error.message, 'error'); return }
+
+    // Auto-create ledger entry
+    await sb.from('cash_transactions').insert({
+      account_id: payForm.account_id,
+      type: 'in',
+      amount,
+      reason: `Payment from ${custName} (order)`,
+      date: payForm.date,
+    })
+
+    // Update order status
+    const totalPaidNow = orderPaid + amount
+    const newStatus = totalPaidNow >= total ? 'paid' : 'partially_paid'
+    await sb.from('orders').update({ status: newStatus }).eq('id', viewOrder.id)
+
+    setSaving(false)
+    notify(newStatus === 'paid' ? 'Payment recorded — order is now fully paid' : `Payment recorded — RWF ${fmt(total - totalPaidNow)} still owed`)
+    setPaySection(false)
+    setViewModal(false)
+    load()
   }
 
   return (
@@ -185,9 +233,6 @@ export default function Orders() {
                               {o.status === 'pending' && (
                                 <button className="btn btn-sm btn-primary" onClick={() => fulfillOrder(o)}>Fulfill</button>
                               )}
-                              {(o.status === 'fulfilled' || o.status === 'partially_paid') && (
-                                <button className="btn btn-sm" onClick={() => markPaid(o)}>Mark Paid</button>
-                              )}
                             </div>
                           </td>
                         </tr>
@@ -230,16 +275,13 @@ export default function Orders() {
         <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, marginTop: 4 }}>
           Line Items
         </div>
-
         {lines.map((line, i) => (
           <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 130px 30px', gap: 6, marginBottom: 6, alignItems: 'end' }}>
             <div>
               {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>Product</div>}
               <select className="form-input" value={line.product_id} onChange={e => setLine(i, 'product_id', e.target.value)}>
                 <option value="">— select —</option>
-                {products.map(p => (
-                  <option key={p.id} value={p.id}>{p.name} (stock: {fmt(p.qty_on_hand)})</option>
-                ))}
+                {products.map(p => <option key={p.id} value={p.id}>{p.name} (stock: {fmt(p.qty_on_hand)})</option>)}
               </select>
             </div>
             <div>
@@ -261,14 +303,11 @@ export default function Orders() {
             </div>
           </div>
         ))}
-
         <button className="btn btn-sm" onClick={() => setLines(ls => [...ls, { ...EMPTY_LINE }])} style={{ marginBottom: 14 }}>+ Add Line</button>
-
         <div style={{ background: 'var(--s2)', padding: '10px 14px', borderRadius: 'var(--rs)', marginBottom: 4 }}>
           <span style={{ fontWeight: 600, fontSize: 12 }}>Order Total: </span>
           <span className="mono" style={{ fontSize: 18, fontWeight: 700, marginLeft: 8 }}>RWF {fmt(lineTotal)}</span>
         </div>
-
         <div className="form-actions">
           <button className="btn" onClick={() => setFormModal(false)}>Cancel</button>
           <button className="btn btn-primary" onClick={saveOrder} disabled={saving}>{saving ? 'Saving…' : 'Create Order'}</button>
@@ -277,56 +316,127 @@ export default function Orders() {
 
       {/* View Order Modal */}
       <Modal open={viewModal} onClose={() => setViewModal(false)} title="Order Details" wide>
-        {viewOrder && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginBottom: 16, padding: '12px 0', borderBottom: '1px solid var(--b)' }}>
-              <div>
-                <div className="form-label">Customer</div>
-                <div style={{ fontWeight: 600, marginTop: 2 }}>{viewOrder.customers?.name || '—'}</div>
-              </div>
-              <div>
-                <div className="form-label">Date</div>
-                <div style={{ marginTop: 2 }}>{viewOrder.date}</div>
-              </div>
-              <div>
-                <div className="form-label">Status</div>
-                <div style={{ marginTop: 4 }}>
-                  <span className={`badge ${STATUS_META[viewOrder.status]?.badge}`}>{STATUS_META[viewOrder.status]?.label}</span>
+        {viewOrder && (() => {
+          const total = orderTotal(viewOrder)
+          const remaining = Math.max(0, total - orderPaid)
+          return (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginBottom: 16, padding: '12px 0', borderBottom: '1px solid var(--b)' }}>
+                <div>
+                  <div className="form-label">Customer</div>
+                  <div style={{ fontWeight: 600, marginTop: 2 }}>{viewOrder.customers?.name || '—'}</div>
+                </div>
+                <div>
+                  <div className="form-label">Date</div>
+                  <div style={{ marginTop: 2 }}>{viewOrder.date}</div>
+                </div>
+                <div>
+                  <div className="form-label">Status</div>
+                  <div style={{ marginTop: 4 }}>
+                    <span className={`badge ${STATUS_META[viewOrder.status]?.badge}`}>{STATUS_META[viewOrder.status]?.label}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-            {viewOrder.notes && (
-              <div className="alert alert-w" style={{ marginBottom: 14 }}>Note: {viewOrder.notes}</div>
-            )}
-            <div className="tbl-wrap">
-              <table>
-                <thead>
-                  <tr><th>Product</th><th>Qty</th><th>Unit Price (RWF)</th><th>Subtotal (RWF)</th></tr>
-                </thead>
-                <tbody>
-                  {!viewItems
-                    ? <tr><td colSpan="4"><div className="loading"><span className="spinner" /></div></td></tr>
-                    : viewItems.map(item => (
-                        <tr key={item.id}>
-                          <td style={{ fontWeight: 500 }}>{item.products?.name || '—'}</td>
-                          <td className="mono">{fmt(item.qty)} {item.products?.unit}</td>
-                          <td className="mono">{fmt(item.unit_price)}</td>
-                          <td className="mono" style={{ fontWeight: 600 }}>{fmt(item.qty * item.unit_price)}</td>
-                        </tr>
-                      ))}
-                  {viewItems && viewItems.length > 0 && (
-                    <tr style={{ background: 'var(--s2)' }}>
-                      <td colSpan="3" style={{ fontWeight: 600 }}>Total</td>
-                      <td className="mono" style={{ fontWeight: 700, fontSize: 15 }}>
-                        RWF {fmt(viewItems.reduce((s, i) => s + i.qty * i.unit_price, 0))}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
+
+              {viewOrder.notes && <div className="alert alert-w" style={{ marginBottom: 14 }}>Note: {viewOrder.notes}</div>}
+
+              <div className="tbl-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Product</th><th>Qty</th><th>Unit Price (RWF)</th><th>Subtotal (RWF)</th></tr>
+                  </thead>
+                  <tbody>
+                    {!viewItems
+                      ? <tr><td colSpan="4"><div className="loading"><span className="spinner" /></div></td></tr>
+                      : viewItems.map(item => (
+                          <tr key={item.id}>
+                            <td style={{ fontWeight: 500 }}>{item.products?.name || '—'}</td>
+                            <td className="mono">{fmt(item.qty)} {item.products?.unit}</td>
+                            <td className="mono">{fmt(item.unit_price)}</td>
+                            <td className="mono" style={{ fontWeight: 600 }}>{fmt(item.qty * item.unit_price)}</td>
+                          </tr>
+                        ))}
+                    {viewItems && viewItems.length > 0 && (
+                      <tr style={{ background: 'var(--s2)' }}>
+                        <td colSpan="3" style={{ fontWeight: 600 }}>Total</td>
+                        <td className="mono" style={{ fontWeight: 700, fontSize: 15 }}>RWF {fmt(total)}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Payment status strip */}
+              {viewOrder.status !== 'paid' && viewOrder.status !== 'pending' && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, margin: '14px 0', background: 'var(--s2)', borderRadius: 'var(--rs)', padding: '10px 14px' }}>
+                  <div>
+                    <div className="form-label">Order Total</div>
+                    <div className="mono" style={{ fontWeight: 600 }}>RWF {fmt(total)}</div>
+                  </div>
+                  <div>
+                    <div className="form-label">Already Paid</div>
+                    <div className="mono" style={{ fontWeight: 600, color: 'var(--ok)' }}>RWF {fmt(orderPaid)}</div>
+                  </div>
+                  <div>
+                    <div className="form-label">Still Owed</div>
+                    <div className="mono" style={{ fontWeight: 600, color: remaining > 0 ? 'var(--er)' : 'var(--ok)' }}>
+                      {remaining > 0 ? `RWF ${fmt(remaining)}` : 'Settled'}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Record payment inline */}
+              {viewOrder.status !== 'paid' && viewOrder.status !== 'pending' && !paySection && (
+                <button className="btn btn-primary btn-sm" onClick={() => setPaySection(true)} style={{ marginTop: 4 }}>
+                  + Record Payment
+                </button>
+              )}
+
+              {paySection && (
+                <div style={{ marginTop: 14, padding: '14px', background: 'var(--brand-l)', borderRadius: 'var(--r)', border: '1px solid #b8ddc9' }}>
+                  <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 10, color: 'var(--brand-d)' }}>Record Payment</div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">Amount (RWF) *</label>
+                      <input
+                        className="form-input"
+                        type="number" step="1" min="0"
+                        value={payForm.amount}
+                        onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))}
+                        placeholder={fmt(remaining)}
+                        autoFocus
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Date</label>
+                      <input className="form-input" type="date" value={payForm.date} onChange={e => setPayForm(f => ({ ...f, date: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">Method</label>
+                      <select className="form-input" value={payForm.method} onChange={e => setPayForm(f => ({ ...f, method: e.target.value }))}>
+                        {METHODS.map(m => <option key={m} value={m}>{METHOD_LABEL[m]}</option>)}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Deposit Into *</label>
+                      <select className="form-input" value={payForm.account_id} onChange={e => setPayForm(f => ({ ...f, account_id: e.target.value }))}>
+                        <option value="">— select account —</option>
+                        {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 7 }}>
+                    <button className="btn" onClick={() => setPaySection(false)}>Cancel</button>
+                    <button className="btn btn-primary" onClick={savePayment} disabled={saving}>{saving ? 'Saving…' : 'Confirm Payment'}</button>
+                  </div>
+                </div>
+              )}
+            </>
+          )
+        })()}
       </Modal>
     </>
   )

@@ -29,6 +29,9 @@ export default function Orders() {
   const [viewModal, setViewModal] = useState(false)
   const [paySection, setPaySection] = useState(false)
   const [payForm, setPayForm] = useState(EMPTY_PAY)
+  const [payNow, setPayNow] = useState(false)
+  const [payAmount, setPayAmount] = useState('')
+  const [payAccountId, setPayAccountId] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { load() }, [])
@@ -54,6 +57,9 @@ export default function Orders() {
   function openNew() {
     setForm({ ...EMPTY_FORM, date: new Date().toISOString().split('T')[0] })
     setLines([{ ...EMPTY_LINE }])
+    setPayNow(false)
+    setPayAmount('')
+    setPayAccountId(accounts[0]?.id || '')
     setFormModal(true)
   }
 
@@ -74,6 +80,19 @@ export default function Orders() {
     if (!form.customer_id) { notify('Select a customer', 'error'); return }
     const valid = lines.filter(l => l.product_id && parseFloat(l.qty) > 0)
     if (valid.length === 0) { notify('Add at least one line item with a product and quantity', 'error'); return }
+
+    // Stock validation — always warn, hard block for fulfilled orders
+    const overStock = valid.filter(l => {
+      const prod = products.find(p => p.id === l.product_id)
+      return prod && parseFloat(l.qty) > prod.qty_on_hand
+    })
+    if (overStock.length > 0 && form.status === 'fulfilled') {
+      const names = overStock.map(l => products.find(p => p.id === l.product_id)?.name).join(', ')
+      notify(`Not enough stock: ${names}`, 'error')
+      return
+    }
+    if (payNow && !payAccountId) { notify('Select which account to deposit payment into', 'error'); return }
+
     setSaving(true)
 
     const { data: ord, error: oe } = await sb.from('orders').insert({
@@ -98,8 +117,30 @@ export default function Orders() {
       await deductInventory(ord.id, valid)
     }
 
+    // Record payment inline if requested
+    if (payNow && payAccountId) {
+      const amount = parseFloat(payAmount) || lineTotal
+      const custName = customers.find(c => c.id === form.customer_id)?.name || 'Customer'
+      await sb.from('payments').insert({
+        customer_id: form.customer_id,
+        order_id: ord.id,
+        amount,
+        account_id: payAccountId,
+        date: form.date,
+      })
+      await sb.from('cash_transactions').insert({
+        account_id: payAccountId,
+        type: 'in',
+        amount,
+        reason: `Payment from ${custName} (order)`,
+        date: form.date,
+      })
+      const newStatus = amount >= lineTotal ? 'paid' : 'partially_paid'
+      await sb.from('orders').update({ status: newStatus }).eq('id', ord.id)
+    }
+
     setSaving(false)
-    notify('Order created')
+    notify(payNow ? 'Order created and payment recorded' : 'Order created')
     setFormModal(false)
     load()
   }
@@ -271,38 +312,120 @@ export default function Orders() {
         <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, marginTop: 4 }}>
           Line Items
         </div>
-        {lines.map((line, i) => (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 130px 30px', gap: 6, marginBottom: 6, alignItems: 'end' }}>
-            <div>
-              {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>Product</div>}
-              <select className="form-input" value={line.product_id} onChange={e => setLine(i, 'product_id', e.target.value)}>
-                <option value="">— select —</option>
-                {products.map(p => <option key={p.id} value={p.id}>{p.name} (stock: {fmt(p.qty_on_hand)})</option>)}
-              </select>
+        {lines.map((line, i) => {
+          const prod = products.find(p => p.id === line.product_id)
+          const qty = parseFloat(line.qty) || 0
+          const overStock = prod && qty > 0 && qty > prod.qty_on_hand
+          const nearLimit = prod && qty > 0 && !overStock && qty > prod.qty_on_hand * 0.8 && prod.qty_on_hand > 0
+          return (
+            <div key={i} style={{ marginBottom: overStock || nearLimit ? 2 : 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 130px 30px', gap: 6, alignItems: 'end' }}>
+                <div>
+                  {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>Product</div>}
+                  <select className="form-input" value={line.product_id} onChange={e => setLine(i, 'product_id', e.target.value)}>
+                    <option value="">— select —</option>
+                    {products.map(p => (
+                      <option key={p.id} value={p.id} style={{ color: p.qty_on_hand === 0 ? '#B83232' : '' }}>
+                        {p.name} — {p.qty_on_hand === 0 ? 'OUT OF STOCK' : `stock: ${fmt(p.qty_on_hand)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>Qty</div>}
+                  <input
+                    className="form-input"
+                    type="number" step="0.01" min="0"
+                    value={line.qty}
+                    onChange={e => setLine(i, 'qty', e.target.value)}
+                    style={{ borderColor: overStock ? 'var(--er)' : nearLimit ? 'var(--wn)' : '' }}
+                  />
+                </div>
+                <div>
+                  {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>Unit Price (RWF)</div>}
+                  <input className="form-input" type="number" step="1" min="0" value={line.unit_price} onChange={e => setLine(i, 'unit_price', e.target.value)} />
+                </div>
+                <div>
+                  {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>&nbsp;</div>}
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => setLines(ls => ls.filter((_, idx) => idx !== i))}
+                    disabled={lines.length === 1}
+                    style={{ padding: '8px 9px', color: lines.length > 1 ? 'var(--er)' : 'var(--t3)' }}
+                  >×</button>
+                </div>
+              </div>
+              {overStock && (
+                <div style={{ color: 'var(--er)', fontSize: 10.5, marginBottom: 5, fontWeight: 500 }}>
+                  ✕ Only {fmt(prod.qty_on_hand)} {prod.unit}(s) in stock — reduce quantity
+                  {form.status === 'fulfilled' ? ' (required to fulfill)' : ' (can still save as pending)'}
+                </div>
+              )}
+              {nearLimit && (
+                <div style={{ color: 'var(--wn)', fontSize: 10.5, marginBottom: 5 }}>
+                  ⚠ Low stock — {fmt(prod.qty_on_hand - qty)} {prod.unit}(s) will remain after this order
+                </div>
+              )}
             </div>
-            <div>
-              {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>Qty</div>}
-              <input className="form-input" type="number" step="0.01" min="0" value={line.qty} onChange={e => setLine(i, 'qty', e.target.value)} />
-            </div>
-            <div>
-              {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>Unit Price (RWF)</div>}
-              <input className="form-input" type="number" step="1" min="0" value={line.unit_price} onChange={e => setLine(i, 'unit_price', e.target.value)} />
-            </div>
-            <div>
-              {i === 0 && <div className="form-label" style={{ marginBottom: 3 }}>&nbsp;</div>}
-              <button
-                className="btn btn-sm"
-                onClick={() => setLines(ls => ls.filter((_, idx) => idx !== i))}
-                disabled={lines.length === 1}
-                style={{ padding: '8px 9px', color: lines.length > 1 ? 'var(--er)' : 'var(--t3)' }}
-              >×</button>
-            </div>
-          </div>
-        ))}
+          )
+        })}
         <button className="btn btn-sm" onClick={() => setLines(ls => [...ls, { ...EMPTY_LINE }])} style={{ marginBottom: 14 }}>+ Add Line</button>
-        <div style={{ background: 'var(--s2)', padding: '10px 14px', borderRadius: 'var(--rs)', marginBottom: 4 }}>
+
+        <div style={{ background: 'var(--s2)', padding: '10px 14px', borderRadius: 'var(--rs)', marginBottom: 12 }}>
           <span style={{ fontWeight: 600, fontSize: 12 }}>Order Total: </span>
           <span className="mono" style={{ fontSize: 18, fontWeight: 700, marginLeft: 8 }}>RWF {fmt(lineTotal)}</span>
+        </div>
+
+        {/* Inline payment option */}
+        <div style={{ borderTop: '1px solid var(--b)', paddingTop: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12.5, fontWeight: 500, marginBottom: payNow ? 10 : 0 }}>
+            <input
+              type="checkbox"
+              checked={payNow}
+              onChange={e => {
+                setPayNow(e.target.checked)
+                if (e.target.checked) setPayAmount(String(Math.round(lineTotal)))
+              }}
+              style={{ width: 15, height: 15, cursor: 'pointer' }}
+            />
+            Record payment now
+          </label>
+          {payNow && (
+            <div style={{ padding: '12px 14px', background: 'var(--brand-l)', borderRadius: 'var(--rs)', border: '1px solid #b8ddc9' }}>
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Amount Paid (RWF)</label>
+                  <input
+                    className="form-input"
+                    type="number" step="1" min="0"
+                    value={payAmount}
+                    onChange={e => setPayAmount(e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Deposit Into *</label>
+                  <select className="form-input" value={payAccountId} onChange={e => setPayAccountId(e.target.value)}>
+                    <option value="">— select account —</option>
+                    {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
+                  </select>
+                </div>
+              </div>
+              {(() => {
+                const paid = parseFloat(payAmount) || 0
+                const remaining = lineTotal - paid
+                if (paid <= 0) return null
+                return (
+                  <div style={{ fontSize: 11, fontWeight: 500, color: remaining > 0 ? 'var(--wn)' : 'var(--ok)' }}>
+                    {remaining > 0
+                      ? `Partial payment — RWF ${fmt(remaining)} still owed after this`
+                      : paid > lineTotal
+                        ? `⚠ Amount exceeds order total by RWF ${fmt(paid - lineTotal)}`
+                        : '✓ Full payment — order will be marked Paid'}
+                  </div>
+                )
+              })()}
+            </div>
+          )}
         </div>
         <div className="form-actions">
           <button className="btn" onClick={() => setFormModal(false)}>Cancel</button>
